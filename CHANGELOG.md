@@ -4,6 +4,17 @@ Formato inspirado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
 versões seguem [SemVer](https://semver.org/lang/pt-BR/). Cada versão publicada aqui
 corresponde a um snapshot no repositório público de distribuição.
 
+## 0.7.2 — 2026-09-11
+
+### Adicionado
+
+- Limite de encaminhamentos por atendimento da CAP1G (5, ajustável por
+  `PJE_TJPE_CAP1G_PROCESSOS_POR_CHAT`): o MCP conta os NPUs distintos citados pelo
+  visitante — mensagem inicial, `enviar_mensagem_chat_cap1g` e o que for digitado na
+  janela —, devolve `processos_solicitados`/`processos_restantes`, recusa a mensagem
+  que passaria do limite e orienta a encerrar e abrir outro chat para o próximo lote.
+  A transcrição lista os processos citados.
+
 ## 0.7.1 — 2026-09-11
 
 ### Corrigido

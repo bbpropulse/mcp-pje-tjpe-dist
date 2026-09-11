@@ -382,6 +382,18 @@ tribunal, então o MCP trata a conversa como ação externa em nome do usuário:
    a conversa volta como `encerrado` e o envio é recusado; se a janela for
    fechada à mão, o atendimento acaba com esse motivo registrado.
 
+**Cinco processos por atendimento.** A CAP1G aceita encaminhamento de até 5
+processos por chat (regra operacional informada por quem usa o serviço; não
+consta do PDF de boas práticas). O MCP conta os NPUs distintos que o visitante
+cita — na mensagem inicial, em `enviar_mensagem_chat_cap1g` e no que for
+digitado à mão na janela — e devolve `processos_solicitados` e
+`processos_restantes` em cada leitura. `preparar_chat_cap1g` recusa mensagem
+inicial com mais processos que o limite, e `enviar_mensagem_chat_cap1g` recusa
+a mensagem que citaria o sexto. Sessões sucessivas são livres: para mais
+processos, divida em lotes de até 5, encerre o chat e inicie outro — há uma
+conversa por vez, mas quantas forem necessárias. O limite é configurável por
+`PJE_TJPE_CAP1G_PROCESSOS_POR_CHAT`, caso a CAP1G mude a regra.
+
 O token da conversa do Mibew nunca sai da página: os modelos devolvidos ao
 protocolo MCP não o contêm. O que um servidor informa no chat é orientação de
 atendimento, não decisão judicial; confira nos Autos antes de agir.
@@ -636,6 +648,9 @@ Aguarde a resposta do operador por até dois minutos e me diga o que ele escreve
 Responda ao operador informando o número da OAB e aguarde de novo.
 
 Encerre o chat e me informe o caminho da transcrição e o SHA-256.
+
+Tenho 12 processos para pedir certidão na CAP1G: divida em lotes de 5, um chat
+por lote, e me mostre o que o operador respondeu em cada um.
 ```
 
 Use sempre um NPU real que você esteja autorizado a consultar. O NPU do exemplo
@@ -648,6 +663,7 @@ Use sempre um NPU real que você esteja autorizado a consultar. O NPU do exemplo
 | `PJE_TJPE_HEADLESS` | `true` | Exibe ou oculta o Chromium usado em operações públicas |
 | `PJE_TJPE_AUTH_HEADLESS` | `false` | Mantém visível o Chromium de autenticação; deve ser `false` para certificado |
 | `PJE_TJPE_CHAT_HEADLESS` | `false` | Mantém visível a janela do chat da CAP1G para o advogado acompanhar e intervir |
+| `PJE_TJPE_CAP1G_PROCESSOS_POR_CHAT` | `5` | Quantos processos distintos um atendimento da CAP1G aceita encaminhar (1 a 50) |
 | `PJE_TJPE_TIMEOUT_MS` | `30000` | Timeout do portal em milissegundos |
 | `PJE_TJPE_MAX_DOCUMENT_BYTES` | `3145728` (3 MiB) | Limite local para leitura e download direto de um documento |
 | `PJE_TJPE_MAX_PJEDOCS_BYTES` | `536870912` (512 MiB) | Teto local independente para baixar a íntegra pronta do PJeDocs |

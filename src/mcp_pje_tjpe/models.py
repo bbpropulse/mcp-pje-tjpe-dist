@@ -413,6 +413,9 @@ class DisponibilidadeChatCap1g(BaseModel):
     telefone: str = "(81) 3181-0506"
     # Só olha o relógio (dia útil e faixa horária); feriados forenses ficam de fora.
     dentro_do_horario: bool
+    # Cada atendimento aceita encaminhamento de até N processos; para mais, encerra-se
+    # e abre-se outro chat.
+    limite_processos_por_atendimento: int = Field(ge=1)
     url: str
     portal: str
     mensagem: str
@@ -426,6 +429,9 @@ class PreparacaoChatCap1g(BaseModel):
     nome: str
     email: str
     mensagem_inicial: str
+    # NPUs distintos citados na mensagem inicial; já contam para o limite do chat.
+    processos_na_mensagem: list[str] = []
+    limite_processos_por_atendimento: int = Field(ge=1)
     disponivel: bool
     expira_em: datetime
     frase_confirmacao: str = Field(min_length=1)
@@ -445,6 +451,11 @@ class SessaoChatCap1g(BaseModel):
     ultimo_id: int = Field(ge=0)
     # Quantas das mensagens devolvidas chegaram depois do marco desta chamada.
     novas_mensagens: int = Field(ge=0)
+    # NPUs distintos que o visitante citou neste atendimento (pela ferramenta ou
+    # digitando na janela), e quantos ainda cabem antes de precisar de outro chat.
+    processos_solicitados: list[str] = []
+    processos_restantes: int = Field(ge=0)
+    limite_processos_por_atendimento: int = Field(ge=1)
     encerrado: bool
     iniciado_em: datetime
     atualizado_em: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -459,6 +470,7 @@ class EncerramentoChatCap1g(BaseModel):
     encerrado_por: Literal["visitante", "operador", "indeterminado"]
     mensagens: list[MensagemChatCap1g]
     total_mensagens: int = Field(ge=0)
+    processos_solicitados: list[str] = []
     transcricao: str
     caminho_sha256: str
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

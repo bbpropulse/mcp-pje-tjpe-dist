@@ -168,7 +168,11 @@ mcp = MCPServer(
         "uma frase que o usuário precisa enviar em nova mensagem para iniciar_chat_cap1g. "
         "Depois, uma mensagem por vez com enviar_mensagem_chat_cap1g, esperando a resposta "
         "com aguardar_resposta_chat_cap1g em vez de repetir; encerrar_chat_cap1g grava a "
-        "transcrição com SHA-256. O que o operador informa no chat não substitui os Autos."
+        "transcrição com SHA-256. Cada atendimento aceita encaminhamento de até 5 "
+        "processos (processos_restantes na resposta): com mais processos, divida em lotes "
+        "de até 5 e faça um chat por lote, encerrando um antes de iniciar o próximo — há "
+        "uma conversa por vez, mas quantas forem necessárias. O que o operador informa no "
+        "chat não substitui os Autos."
     ),
     lifespan=lifespan,
 )

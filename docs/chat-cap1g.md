@@ -123,6 +123,14 @@ O cliente chama `update` (estado, `canPost`, `typing`) e `updateMessages` (novas
 mensagens a partir de `lastId`) a cada 2 s enquanto a página existir; o MCP não
 precisa — e não deve — fazer polling próprio ao servidor do TJPE.
 
+## Regras operacionais não escritas
+
+- **Até 5 processos por atendimento.** Informado em 2026-09-11 por quem usa o chat; não
+  consta do PDF nem da página. O operador recusa o sexto encaminhamento na mesma
+  conversa, mas nada impede encerrar e abrir outro chat para o lote seguinte. O MCP
+  conta NPUs distintos citados pelo visitante (`extrair_processos`) e bloqueia antes
+  de o operador precisar recusar; `PJE_TJPE_CAP1G_PROCESSOS_POR_CHAT` ajusta o número.
+
 ## Boas práticas publicadas (PDF do portal)
 
 Respeito; identificar-se com nome e e-mail; ser claro e objetivo; aguardar com

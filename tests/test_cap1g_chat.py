@@ -18,6 +18,7 @@ from mcp_pje_tjpe.cap1g_chat import (
     Cap1gChatService,
     dentro_do_horario,
     extrair_opcoes_mibew,
+    extrair_processos,
     frase_confirmacao_chat,
     normalizar_email,
     normalizar_mensagem,
@@ -181,6 +182,7 @@ _FAKE_APP_JS = """
     return addMessage(2, name || "Maria (CAP)", text);
   };
   fake.info = function (text) { return addMessage(4, "", text); };
+  fake.visitorTypes = function (text) { return addMessage(1, user.get("name"), text); };
   fake.typing = function (value) { typing.set({visible: !!value}); };
   fake.operatorCloses = function () {
     thread.set({state: 3});
@@ -350,9 +352,14 @@ def _service(
     html: Callable[[], str],
     *,
     echo_seconds: float = 15.0,
+    limite_processos: int = 5,
 ) -> tuple[Cap1gChatService, _FakeBrowserManager]:
     manager = _FakeBrowserManager(browser, html)
-    settings = Settings(timeout_ms=5_000, downloads_dir=tmp_path / "downloads")
+    settings = Settings(
+        timeout_ms=5_000,
+        downloads_dir=tmp_path / "downloads",
+        cap1g_processos_por_chat=limite_processos,
+    )
     service = Cap1gChatService(
         cast(BrowserManager, manager),
         cast(BrowserManager, manager),
@@ -433,6 +440,18 @@ def test_identification_and_message_rules_follow_cap1g_good_practices() -> None:
 def test_confirmation_phrase_is_bound_to_normalized_identification() -> None:
     phrase = frase_confirmacao_chat(" Ana  Exemplo ", "Ana@Exemplo.com")
     assert phrase == "CONFIRMO INICIAR O CHAT DA CAP1G DO TJPE COMO ANA EXEMPLO (ana@exemplo.com)"
+
+
+def test_process_numbers_are_extracted_once_each_in_official_format() -> None:
+    texto = (
+        "Peço andamento dos processos 9999901-17.2099.8.17.9999 e 99999020220998179999; "
+        "o primeiro, 9999901-17.2099.8.17.9999, é urgente. OAB/PE 12345, CPF 111.111.111-11."
+    )
+    assert extrair_processos(texto) == [
+        "9999901-17.2099.8.17.9999",
+        "9999902-02.2099.8.17.9999",
+    ]
+    assert extrair_processos("sem processo; protocolo 12345678901234567890123") == []
 
 
 def test_business_hours_follow_recife_clock() -> None:
@@ -861,6 +880,75 @@ async def test_closing_without_the_mibew_control_is_reported_as_unconfirmed(
         closure = await service.encerrar(session.referencia_chat)
         assert closure.encerrado_por == "visitante"
         assert "sem confirmação do chat" in _texto(closure.transcricao)
+    finally:
+        await service.close()
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_each_chat_forwards_at_most_the_allowed_processes(
+    browser: Browser, tmp_path: Path
+) -> None:
+    def npu(i: int) -> str:
+        return f"99999{i:02d}-00.2099.8.17.9999"
+
+    service, manager = _service(
+        browser, tmp_path, lambda: _fake_page(_ONLINE_OPTIONS), limite_processos=3
+    )
+    try:
+        status = await service.verificar()
+        assert status.limite_processos_por_atendimento == 3
+
+        with pytest.raises(ValidacaoError, match="no máximo 3 por atendimento"):
+            await service.preparar(
+                "Ana Exemplo",
+                "ana@exemplo.com",
+                f"Peço andamento de {npu(1)}, {npu(2)}, {npu(3)} e {npu(4)}.",
+            )
+
+        preparation = await service.preparar(
+            "Ana Exemplo", "ana@exemplo.com", f"Peço andamento de {npu(1)}."
+        )
+        assert preparation.processos_na_mensagem == [npu(1)]
+        session = await service.iniciar(
+            preparation.referencia_preparo, preparation.frase_confirmacao
+        )
+        assert session.processos_solicitados == [npu(1)]
+        assert session.processos_restantes == 2
+        page = manager.chat_page()
+
+        # O que o advogado digita na própria janela também conta.
+        await page.evaluate(f"window.__mibewFake.visitorTypes('E também o {npu(2)}, por favor')")
+        typed = await service.aguardar(session.referencia_chat, timeout_segundos=5)
+        assert typed.processos_solicitados == [npu(1), npu(2)]
+        assert typed.processos_restantes == 1
+
+        # Repetir um processo já citado não consome vaga.
+        again = await service.enviar(session.referencia_chat, f"Sobre o {npu(1)}: há alvará?")
+        assert again.processos_restantes == 1
+
+        last = await service.enviar(session.referencia_chat, f"Por fim, o {npu(3)}.")
+        assert last.processos_restantes == 0
+        assert "Limite de 3 processos deste atendimento atingido" in last.aviso
+
+        with pytest.raises(ValidacaoError, match="no máximo 3 por chat"):
+            await service.enviar(session.referencia_chat, f"Ah, e o {npu(4)} também.")
+        # Sem processo novo, a conversa segue normalmente.
+        await service.enviar(session.referencia_chat, "Obrigada pela atenção.")
+
+        closure = await service.encerrar(session.referencia_chat)
+        assert closure.processos_solicitados == [npu(1), npu(2), npu(3)]
+        assert f"Processos citados: {npu(1)}, {npu(2)}, {npu(3)}" in _texto(closure.transcricao)
+
+        # Outro lote é outro chat: a sessão seguinte começa do zero.
+        next_preparation = await service.preparar(
+            "Ana Exemplo", "ana@exemplo.com", f"Peço andamento de {npu(4)}."
+        )
+        next_session = await service.iniciar(
+            next_preparation.referencia_preparo, next_preparation.frase_confirmacao
+        )
+        assert next_session.processos_solicitados == [npu(4)]
+        assert next_session.processos_restantes == 2
     finally:
         await service.close()
         await manager.close()

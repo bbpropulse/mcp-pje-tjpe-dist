@@ -71,6 +71,14 @@ class Settings:
     # O chat da CAP1G é uma conversa com um servidor do tribunal: a janela fica visível
     # para o advogado acompanhar e intervir; o padrão só muda se ele pedir.
     chat_headless: bool = field(default_factory=lambda: _env_bool("PJE_TJPE_CHAT_HEADLESS", False))
+    # Regra operacional da CAP1G, informada por quem usa o chat (não consta do PDF de
+    # boas práticas): cada atendimento aceita encaminhamento de até 5 processos.
+    # Sessões sucessivas são livres; por isso é limite por chat, não por dia.
+    cap1g_processos_por_chat: int = field(
+        default_factory=lambda: _positive_env_int(
+            "PJE_TJPE_CAP1G_PROCESSOS_POR_CHAT", 5, maximum=50
+        )
+    )
     timeout_ms: int = field(default_factory=lambda: int(os.getenv("PJE_TJPE_TIMEOUT_MS", "30000")))
     max_document_bytes: int = field(
         default_factory=lambda: int(os.getenv("PJE_TJPE_MAX_DOCUMENT_BYTES", str(3 * 1024 * 1024)))

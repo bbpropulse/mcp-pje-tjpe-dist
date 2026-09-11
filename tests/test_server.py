@@ -96,7 +96,7 @@ async def test_status_does_not_launch_browser() -> None:
         assert result.is_error is False
         assert result.structured_content is not None
         assert result.structured_content["tribunal"] == "TJPE"
-        assert result.structured_content["versao"] == "0.7.1"
+        assert result.structured_content["versao"] == "0.7.2"
         assert result.structured_content["modo_seguro"] is True
 
 

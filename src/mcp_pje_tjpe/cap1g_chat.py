@@ -61,6 +61,9 @@ _REFERENCE = re.compile(r"^[A-Za-z0-9_-]{20,80}$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _APPLICATION_START = re.compile(r"Mibew\.Application\.start\(")
 _HTML_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
+# Numeração única do CNJ, com ou sem os separadores: é o que identifica um
+# "encaminhamento" para a CAP1G, que aceita poucos por atendimento.
+_NPU_CNJ = re.compile(r"(?<!\d)(\d{7})-?(\d{2})\.?(\d{4})\.?(\d)\.?(\d{2})\.?(\d{4})(?!\d)")
 _PLAN_TTL = timedelta(minutes=10)
 _MAX_NOME = 100
 _MAX_MENSAGEM = 2000
@@ -215,6 +218,15 @@ def normalizar_mensagem(mensagem: str) -> str:
     return clean
 
 
+def extrair_processos(texto: str) -> list[str]:
+    """NPUs distintos citados no texto, no formato oficial e na ordem em que aparecem."""
+    vistos: dict[str, None] = {}
+    for match in _NPU_CNJ.finditer(texto):
+        seq, dv, ano, justica, tribunal, origem = match.groups()
+        vistos.setdefault(f"{seq}-{dv}.{ano}.{justica}.{tribunal}.{origem}", None)
+    return list(vistos)
+
+
 def dentro_do_horario(momento: datetime | None = None) -> bool:
     local = (momento or datetime.now(UTC)).astimezone(_FUSO_TRIBUNAL)
     return local.weekday() < 5 and _HORARIO_INICIO <= local.hour < _HORARIO_FIM
@@ -316,6 +328,9 @@ class _Session:
     missing_fields: list[str] = field(default_factory=list[str])
     # O que deu errado depois de a conversa existir — não derruba o chat, avisa.
     opening_warning: str | None = None
+    # NPUs distintos citados pelo visitante, na ordem: a CAP1G limita quantos
+    # encaminhamentos um atendimento leva, e o que foi digitado à mão também conta.
+    processos: dict[str, None] = field(default_factory=dict[str, None])
 
 
 class Cap1gChatService:
@@ -375,6 +390,7 @@ class Cap1gChatService:
             modo_inicial=modo,
             grupo=grupo,
             dentro_do_horario=no_horario,
+            limite_processos_por_atendimento=self.config.cap1g_processos_por_chat,
             url=self.config.urls.cap1g_chat,
             portal=self.config.urls.cap1g_portal,
             mensagem=mensagem,
@@ -391,6 +407,14 @@ class Cap1gChatService:
         clean_nome = normalizar_nome(nome)
         clean_email = normalizar_email(email)
         clean_mensagem = normalizar_mensagem(mensagem_inicial)
+        processos = extrair_processos(clean_mensagem)
+        limite = self.config.cap1g_processos_por_chat
+        if len(processos) > limite:
+            raise ValidacaoError(
+                f"a mensagem inicial cita {len(processos)} processos e a CAP1G aceita "
+                f"encaminhamento de no máximo {limite} por atendimento; divida em lotes "
+                "e abra um chat por lote"
+            )
         availability = self._availability(await self._read_chat_options())
         if not availability.disponivel:
             raise ServicoIndisponivelError(
@@ -416,6 +440,8 @@ class Cap1gChatService:
             nome=clean_nome,
             email=clean_email,
             mensagem_inicial=clean_mensagem,
+            processos_na_mensagem=processos,
+            limite_processos_por_atendimento=limite,
             disponivel=True,
             expira_em=plan.expires_at,
             frase_confirmacao=frase_confirmacao_chat(clean_nome, clean_email),
@@ -518,6 +544,7 @@ class Cap1gChatService:
         # A pergunta inicial já foi com o survey; ela só ecoa no primeiro ciclo de
         # atualização do cliente. Esperar por ela deixa a resposta de iniciar completa.
         session.last_visitor_text = mensagem_inicial
+        self._register_processes(session, mensagem_inicial)
         try:
             await self._wait_until(
                 session,
@@ -629,6 +656,15 @@ class Cap1gChatService:
                     "mensagem idêntica à última enviada; repetir mensagens em sequência "
                     "atrasa o atendimento segundo as boas práticas da CAP1G"
                 )
+            novos = [n for n in extrair_processos(text) if n not in session.processos]
+            limite = self.config.cap1g_processos_por_chat
+            if len(session.processos) + len(novos) > limite:
+                raise ValidacaoError(
+                    f"este atendimento já tem {len(session.processos)} processo(s) e a "
+                    f"CAP1G aceita encaminhamento de no máximo {limite} por chat; a "
+                    f"mensagem citaria mais {len(novos)}. Encerre este chat com "
+                    "encerrar_chat_cap1g e inicie outro para os demais processos"
+                )
             baseline = session.last_id
             consecutive = bool(session.messages) and (
                 session.messages[-1].tipo is TipoMensagemChat.VISITANTE
@@ -656,6 +692,7 @@ class Cap1gChatService:
         # só depois do eco deixaria uma repetição passar pela checagem de duplicata —
         # e repetir mensagem é justamente o que a CAP1G pede para não fazer.
         session.last_visitor_text = text
+        self._register_processes(session, text)
         try:
             await self._wait_until(
                 session,
@@ -832,11 +869,18 @@ class Cap1gChatService:
             session.seen_ids.add(message.id)
             session.messages.append(message)
             session.last_id = max(session.last_id, message.id)
+            if message.tipo is TipoMensagemChat.VISITANTE:
+                self._register_processes(session, message.texto)
             changed = True
         session.messages.sort(key=lambda m: m.id)
         if changed:
             session.version += 1
         return changed
+
+    @staticmethod
+    def _register_processes(session: _Session, texto: str) -> None:
+        for numero in extrair_processos(texto):
+            session.processos.setdefault(numero, None)
 
     async def _notify(self, session: _Session) -> None:
         async with session.condition:
@@ -942,12 +986,14 @@ class Cap1gChatService:
 
     def _transcript(self, session: _Session) -> str:
         started = session.started_at.astimezone(_FUSO_TRIBUNAL)
+        processos = ", ".join(session.processos) if session.processos else "nenhum"
         lines = [
             "# Atendimento no chat da CAP1G/TJPE",
             "",
             f"- Iniciado em: {started:%Y-%m-%d %H:%M:%S} ({_FUSO_TRIBUNAL.key})",
             f"- Visitante: {session.nome} <{session.email}>",
             f"- Conversa Mibew: {session.thread_id if session.thread_id else 'não informada'}",
+            f"- Processos citados: {processos}",
             f"- Estado: {_estado(session).value}",
         ]
         if session.ended:
@@ -997,6 +1043,13 @@ class Cap1gChatService:
             )
         if session.opening_warning:
             aviso = session.opening_warning + " " + aviso
+        limite = self.config.cap1g_processos_por_chat
+        restantes = max(0, limite - len(session.processos))
+        if restantes == 0 and not session.ended:
+            aviso = (
+                f"Limite de {limite} processos deste atendimento atingido: para outros "
+                "processos, encerre este chat e inicie um novo. " + aviso
+            )
         if reused:
             aviso = (
                 "Conversa já iniciada por esta preparação; nenhum novo chat foi aberto. " + aviso
@@ -1014,6 +1067,9 @@ class Cap1gChatService:
             total_mensagens=len(session.messages),
             ultimo_id=session.last_id,
             novas_mensagens=len(new_messages),
+            processos_solicitados=list(session.processos),
+            processos_restantes=restantes,
+            limite_processos_por_atendimento=limite,
             encerrado=encerrado,
             iniciado_em=session.started_at,
             transcricao=str(session.final_path or session.partial_path or "") or None,
@@ -1044,6 +1100,7 @@ class Cap1gChatService:
             encerrado_por=encerrado_por,
             mensagens=list(session.messages),
             total_mensagens=len(session.messages),
+            processos_solicitados=list(session.processos),
             transcricao=str(final_path),
             caminho_sha256=str(final_path.with_suffix(final_path.suffix + ".sha256")),
             sha256=session.sha256,
