@@ -152,7 +152,8 @@ _FAKE_APP_JS = """
 
   var thread, user, messages, typing, notice, lastId = 0;
   var fake = window.__mibewFake = {
-    posted: [], closeRequested: false, survey: null, forceOffline: false, rejectEmail: null
+    posted: [], closeRequested: false, survey: null, forceOffline: false, rejectEmail: null,
+    swallowPosts: false
   };
 
   function render() {
@@ -221,6 +222,7 @@ _FAKE_APP_JS = """
       if (!text || input.disabled) { return; }
       input.disabled = true;
       fake.posted.push(text);
+      if (fake.swallowPosts) { return; }
       setTimeout(function () {
         addMessage(1, user.get("name"), text);
         input.value = "";
@@ -254,6 +256,7 @@ _FAKE_APP_JS = """
 
   window.Mibew.Application = {start: function (options) {
     if (options.startFrom === "survey") { renderSurvey(); }
+    else if (options.startFrom === "chat") { startChat("Visitante", "", ""); }
     else { document.body.className = "leaveMessage";
            document.getElementById("main-region").innerHTML = __LEAVE_HTML__; }
   }};
@@ -342,7 +345,11 @@ def _parciais(caminho: str) -> list[Path]:
 
 
 def _service(
-    browser: Browser, tmp_path: Path, html: Callable[[], str]
+    browser: Browser,
+    tmp_path: Path,
+    html: Callable[[], str],
+    *,
+    echo_seconds: float = 15.0,
 ) -> tuple[Cap1gChatService, _FakeBrowserManager]:
     manager = _FakeBrowserManager(browser, html)
     settings = Settings(timeout_ms=5_000, downloads_dir=tmp_path / "downloads")
@@ -351,6 +358,7 @@ def _service(
         cast(BrowserManager, manager),
         settings,
         poll_seconds=0.1,
+        echo_seconds=echo_seconds,
     )
     return service, manager
 
@@ -382,6 +390,19 @@ def test_extracts_mibew_options_from_real_offline_markup() -> None:
     options = extrair_opcoes_mibew(html)
     assert options["startFrom"] == "leaveMessage"
     assert options["leaveMessageOptions"]["leaveMessageForm"]["groupName"] == "CAP"
+
+
+def test_embedded_options_tolerate_whitespace_before_the_json() -> None:
+    html = "Mibew.Application.start(\n  " + json.dumps(_ONLINE_OPTIONS) + ");"
+    assert extrair_opcoes_mibew(html)["startFrom"] == "survey"
+
+
+def test_plain_text_keeps_comparisons_and_drops_markup() -> None:
+    from mcp_pje_tjpe.cap1g_chat import _plain_text
+
+    assert _plain_text("valor &lt; 10 e &gt; 5") == "valor < 10 e > 5"
+    assert _plain_text("valor < 10 e > 5") == "valor < 10 e > 5"
+    assert _plain_text('veja <a href="https://x">o link</a><br/>ok') == "veja o link\nok"
 
 
 def test_unrecognized_page_is_reported_as_unavailable_service() -> None:
@@ -721,12 +742,125 @@ async def test_closing_the_window_by_hand_ends_the_session_with_a_reason(
 
         snapshot = await service.ler(session.referencia_chat)
         assert snapshot.encerrado is True
+        assert snapshot.estado is EstadoChatCap1g.ABANDONADO
         assert "janela do chat fechada" in snapshot.aviso
         with pytest.raises(ValidacaoError, match="janela do chat fechada"):
             await service.enviar(session.referencia_chat, "Ainda aí?")
         closure = await service.encerrar(session.referencia_chat)
         assert closure.encerrado_por == "indeterminado"
         assert _existe(closure.transcricao)
+    finally:
+        await service.close()
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_page_that_opens_straight_into_the_chat_skips_the_survey(
+    browser: Browser, tmp_path: Path
+) -> None:
+    mode = "survey"
+
+    def html() -> str:
+        return _fake_page({**_ONLINE_OPTIONS, "startFrom": mode})
+
+    service, manager = _service(browser, tmp_path, html)
+    try:
+        preparation = await service.preparar(
+            "Ana Exemplo", "ana@exemplo.com", "Bom dia, peço andamento"
+        )
+        mode = "chat"
+        session = await service.iniciar(
+            preparation.referencia_preparo, preparation.frase_confirmacao
+        )
+        page = manager.chat_page()
+        assert await page.evaluate("window.__mibewFake.survey") is None
+        assert await page.evaluate("window.__mibewFake.posted") == ["Bom dia, peço andamento"]
+        assert [m.texto for m in session.mensagens if m.tipo is TipoMensagemChat.VISITANTE] == [
+            "Bom dia, peço andamento"
+        ]
+        assert session.pode_enviar is True
+    finally:
+        await service.close()
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_unconfirmed_send_counts_as_sent_and_is_not_repeated(
+    browser: Browser, tmp_path: Path
+) -> None:
+    service, manager = _service(
+        browser, tmp_path, lambda: _fake_page(_ONLINE_OPTIONS), echo_seconds=1.0
+    )
+    try:
+        preparation = await service.preparar("Ana Exemplo", "ana@exemplo.com", "Olá")
+        session = await service.iniciar(
+            preparation.referencia_preparo, preparation.frase_confirmacao
+        )
+        page = manager.chat_page()
+        await page.evaluate("window.__mibewFake.operator('Pois não?')")
+        await page.evaluate("window.__mibewFake.swallowPosts = true")
+
+        with pytest.raises(ServicoIndisponivelError, match="não a repita"):
+            await service.enviar(session.referencia_chat, "Peço a certidão de objeto e pé.")
+        assert await page.evaluate("window.__mibewFake.posted") == [
+            "Peço a certidão de objeto e pé."
+        ]
+        # O texto saiu para o tribunal: repetir é o que a CAP1G pede para não fazer.
+        with pytest.raises(ValidacaoError, match="idêntica"):
+            await service.enviar(session.referencia_chat, "Peço a certidão de objeto e pé.")
+        assert await page.evaluate("window.__mibewFake.posted") == [
+            "Peço a certidão de objeto e pé."
+        ]
+    finally:
+        await service.close()
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_failed_opening_message_keeps_the_conversation_and_warns(
+    browser: Browser, tmp_path: Path
+) -> None:
+    service, manager = _service(
+        browser,
+        tmp_path,
+        lambda: _fake_page(_ONLINE_OPTIONS, message_field=False).replace(
+            "swallowPosts: false", "swallowPosts: true"
+        ),
+        echo_seconds=1.0,
+    )
+    try:
+        preparation = await service.preparar("Ana Exemplo", "ana@exemplo.com", "Olá, bom dia")
+        session = await service.iniciar(
+            preparation.referencia_preparo, preparation.frase_confirmacao
+        )
+        # A conversa existe e fica de pé; só a mensagem inicial fica sem confirmação.
+        assert session.encerrado is False
+        assert "mensagem inicial não foi confirmada" in session.aviso
+        assert not manager.chat_page().is_closed()
+        assert service._active == session.referencia_chat
+        with pytest.raises(ValidacaoError, match="idêntica"):
+            await service.enviar(session.referencia_chat, "Olá, bom dia")
+        closure = await service.encerrar(session.referencia_chat)
+        assert closure.encerrado_por == "visitante"
+    finally:
+        await service.close()
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_closing_without_the_mibew_control_is_reported_as_unconfirmed(
+    browser: Browser, tmp_path: Path
+) -> None:
+    service, manager = _service(browser, tmp_path, lambda: _fake_page(_ONLINE_OPTIONS))
+    try:
+        preparation = await service.preparar("Ana Exemplo", "ana@exemplo.com", "Olá")
+        session = await service.iniciar(
+            preparation.referencia_preparo, preparation.frase_confirmacao
+        )
+        await manager.chat_page().evaluate("delete window.Mibew.Objects.Models.Controls")
+        closure = await service.encerrar(session.referencia_chat)
+        assert closure.encerrado_por == "visitante"
+        assert "sem confirmação do chat" in _texto(closure.transcricao)
     finally:
         await service.close()
         await manager.close()

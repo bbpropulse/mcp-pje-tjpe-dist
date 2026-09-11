@@ -60,7 +60,7 @@ _T = TypeVar("_T")
 _REFERENCE = re.compile(r"^[A-Za-z0-9_-]{20,80}$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _APPLICATION_START = re.compile(r"Mibew\.Application\.start\(")
-_HTML_TAG = re.compile(r"<[^>]+>")
+_HTML_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
 _PLAN_TTL = timedelta(minutes=10)
 _MAX_NOME = 100
 _MAX_MENSAGEM = 2000
@@ -141,6 +141,18 @@ _SNAPSHOT_JS = """
 }
 """
 
+# Primeira tela do Mibew: survey (há operador), leaveMessage (não há) ou o chat
+# direto (conversa já existente). Só devolve algo quando a página decidiu.
+_STAGE_JS = """
+() => {
+  if (document.querySelector("#messages-region")) { return "chat"; }
+  if (document.querySelector("form[name='surveyForm']")) { return "survey"; }
+  if (document.querySelector("form[name='leaveMessageForm']")
+      || document.body.classList.contains("leaveMessage")) { return "leave"; }
+  return null;
+}
+"""
+
 # Desfecho do clique em "Iniciar Chat": só devolve algo quando a página decidiu.
 _SURVEY_OUTCOME_JS = """
 () => {
@@ -216,8 +228,11 @@ def extrair_opcoes_mibew(documento: str) -> dict[str, Any]:
             "a página do chat da CAP1G não é mais um Mibew reconhecível; "
             "verifique o portal antes de tentar de novo"
         )
+    inicio = match.end()
+    while inicio < len(documento) and documento[inicio].isspace():
+        inicio += 1
     try:
-        options, _ = json.JSONDecoder().raw_decode(documento, match.end())
+        options, _ = json.JSONDecoder().raw_decode(documento, inicio)
     except json.JSONDecodeError:
         raise ServicoIndisponivelError(
             "a configuração embutida do chat da CAP1G não pôde ser lida"
@@ -299,6 +314,8 @@ class _Session:
     last_visitor_text: str | None = None
     # Campos de identificação que o survey da CAP1G não ofereceu desta vez.
     missing_fields: list[str] = field(default_factory=list[str])
+    # O que deu errado depois de a conversa existir — não derruba o chat, avisa.
+    opening_warning: str | None = None
 
 
 class Cap1gChatService:
@@ -311,11 +328,13 @@ class Cap1gChatService:
         config: Settings,
         *,
         poll_seconds: float = _POLL_SECONDS,
+        echo_seconds: float = _ECHO_TIMEOUT_SECONDS,
     ) -> None:
         self.chat_browser = chat_browser
         self.public_browser = public_browser
         self.config = config
         self.poll_seconds = poll_seconds
+        self.echo_seconds = echo_seconds
         self._plans: OrderedDict[str, _Plan] = OrderedDict()
         self._sessions: OrderedDict[str, _Session] = OrderedDict()
         self._active: str | None = None
@@ -445,7 +464,10 @@ class Cap1gChatService:
         try:
             await self._open_chat(session, plan.mensagem_inicial)
         except BaseException:
+            await self._stop_monitor(session)
             await self._discard_browser(session)
+            if session.partial_path is not None:
+                session.partial_path.unlink(missing_ok=True)
             async with self._state_lock:
                 plan.session_reference = None
                 self._sessions.pop(session.reference, None)
@@ -463,14 +485,54 @@ class Cap1gChatService:
         page.set_default_navigation_timeout(self.config.timeout_ms)
         await page.goto(self.config.urls.cap1g_chat, wait_until="domcontentloaded")
 
-        survey = page.locator("form[name='surveyForm']")
-        leave = page.locator("form[name='leaveMessageForm'], body.leaveMessage")
-        await survey.or_(leave).first.wait_for(state="attached")
-        if await survey.count() == 0:
+        try:
+            stage = await (await page.wait_for_function(_STAGE_JS)).json_value()
+        except PlaywrightTimeoutError:
+            raise ServicoIndisponivelError(
+                "a página do chat da CAP1G não mostrou formulário nem aviso"
+            ) from None
+        if stage == "leave":
             raise ServicoIndisponivelError(
                 "a CAP1G ficou sem operador antes de abrir o chat; nenhuma conversa foi criada"
             )
+        message_in_survey = False
+        if stage == "survey":
+            message_in_survey = await self._submit_survey(session, page, mensagem_inicial)
 
+        snapshot = await self._evaluate_snapshot(session)
+        if snapshot is None or snapshot.get("stage") != "chat":
+            raise ServicoIndisponivelError("o chat abriu, mas o cliente Mibew não expôs a conversa")
+        self._apply_snapshot(session, snapshot)
+        session.partial_path = self._partial_transcript_path(session)
+        self._write_partial(session)
+        session.monitor = asyncio.create_task(self._monitor(session))
+
+        # Daqui em diante a conversa existe e um servidor pode já estar em linha:
+        # falhar a primeira mensagem não pode fechar a janela na cara dele.
+        if not message_in_survey:
+            try:
+                await self._post(session, mensagem_inicial)
+            except PjeTjpeError as exc:
+                session.opening_warning = f"A mensagem inicial não foi confirmada: {exc}."
+            return
+        # A pergunta inicial já foi com o survey; ela só ecoa no primeiro ciclo de
+        # atualização do cliente. Esperar por ela deixa a resposta de iniciar completa.
+        session.last_visitor_text = mensagem_inicial
+        try:
+            await self._wait_until(
+                session,
+                lambda s: any(m.tipo is TipoMensagemChat.VISITANTE for m in s.messages),
+                limite_segundos=self.echo_seconds,
+            )
+        except TimeoutError:
+            session.opening_warning = (
+                "A pergunta inicial foi enviada com o formulário, mas ainda não apareceu "
+                "na conversa; confira com ler_chat_cap1g antes de repeti-la."
+            )
+
+    async def _submit_survey(self, session: _Session, page: Page, mensagem_inicial: str) -> bool:
+        """Preenche e envia o survey; devolve se a pergunta inicial foi junto."""
+        survey = page.locator("form[name='surveyForm']")
         # A CAP1G pode desligar campos do survey; só se preenche o que existe, e a
         # mensagem inicial vai como primeira fala do chat se o campo não estiver lá.
         for rotulo, seletor, valor in (
@@ -502,28 +564,7 @@ class Cap1gChatService:
             raise ServicoIndisponivelError(
                 "a CAP1G ficou sem operador ao enviar o formulário; nenhuma conversa foi criada"
             )
-
-        snapshot = await self._evaluate_snapshot(session)
-        if snapshot is None or snapshot.get("stage") != "chat":
-            raise ServicoIndisponivelError("o chat abriu, mas o cliente Mibew não expôs a conversa")
-        self._apply_snapshot(session, snapshot)
-        session.partial_path = self._partial_transcript_path(session)
-        self._write_partial(session)
-        session.monitor = asyncio.create_task(self._monitor(session))
-        if not message_in_survey:
-            await self._post(session, mensagem_inicial)
-            return
-        # A pergunta inicial já foi com o survey; ela só ecoa no primeiro ciclo de
-        # atualização do cliente. Esperar por ela deixa a resposta de iniciar completa.
-        session.last_visitor_text = mensagem_inicial
-        try:
-            await self._wait_until(
-                session,
-                lambda s: any(m.tipo is TipoMensagemChat.VISITANTE for m in s.messages),
-                limite_segundos=_ECHO_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            pass
+        return message_in_survey
 
     # -- leitura e espera -------------------------------------------------------------
 
@@ -611,13 +652,17 @@ class Cap1gChatService:
         baseline = session.last_id
         await field_locator.fill(text)
         await page.locator("#send-message").click()
+        # Clicado, o texto está a caminho do tribunal mesmo que o eco demore. Marcar
+        # só depois do eco deixaria uma repetição passar pela checagem de duplicata —
+        # e repetir mensagem é justamente o que a CAP1G pede para não fazer.
+        session.last_visitor_text = text
         try:
             await self._wait_until(
                 session,
                 lambda s: any(
                     m.id > baseline and m.tipo is TipoMensagemChat.VISITANTE for m in s.messages
                 ),
-                limite_segundos=_ECHO_TIMEOUT_SECONDS,
+                limite_segundos=self.echo_seconds,
             )
         except TimeoutError:
             if session.ended:
@@ -625,10 +670,9 @@ class Cap1gChatService:
                     f"o atendimento acabou antes de confirmar o envio ({session.ended_reason})"
                 ) from None
             raise ServicoIndisponivelError(
-                "a mensagem foi digitada, mas o chat não confirmou o recebimento; "
-                "leia o chat antes de reenviar"
+                "a mensagem foi enviada, mas o chat ainda não a mostrou; confira com "
+                "ler_chat_cap1g — não a repita"
             ) from None
-        session.last_visitor_text = text
 
     @_sanitized_failure("não foi possível encerrar o chat da CAP1G")
     async def encerrar(self, referencia_chat: str) -> EncerramentoChatCap1g:
@@ -655,7 +699,9 @@ class Cap1gChatService:
                         )
                     except TimeoutError:
                         pass
-                await self._end(session, "encerrado pelo visitante")
+                    await self._end(session, "encerrado pelo visitante")
+                else:
+                    await self._end(session, "encerrado pelo visitante sem confirmação do chat")
             elif not session.ended:
                 await self._end(session, "janela do chat indisponível")
             if page is not None and not page.is_closed():
@@ -679,6 +725,13 @@ class Cap1gChatService:
         """Encerra o que ainda estiver aberto ao desligar o servidor."""
         for session in list(self._sessions.values()):
             await self._stop_monitor(session)
+            page = session.page
+            if not session.ended and page is not None and not page.is_closed():
+                # Melhor esforço: avisa o Mibew que o visitante saiu, sem esperar.
+                try:
+                    await page.evaluate(_CLOSE_JS)
+                except PlaywrightError:
+                    pass
             if not session.ended:
                 session.ended = True
                 session.ended_reason = "servidor desligado"
@@ -688,6 +741,8 @@ class Cap1gChatService:
                     self._publish_final(session)
                 except Exception:
                     pass
+            elif session.partial_path is not None:
+                session.partial_path.unlink(missing_ok=True)
 
     # -- monitor ----------------------------------------------------------------------
 
@@ -807,7 +862,12 @@ class Cap1gChatService:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + limite_segundos
         while True:
-            await self._refresh(session)
+            try:
+                await self._refresh(session)
+            except PlaywrightError:
+                # Evaluate interrompido no meio de uma troca de contexto: tenta de
+                # novo até o prazo; a janela fechada _refresh já trata sozinho.
+                pass
             if predicate(session):
                 return
             remaining = deadline - loop.time()
@@ -935,6 +995,8 @@ class Cap1gChatService:
                 f"O formulário do chat não tinha campo de {' e '.join(session.missing_fields)}; "
                 "identifique-se na conversa, como pedem as boas práticas da CAP1G. " + aviso
             )
+        if session.opening_warning:
+            aviso = session.opening_warning + " " + aviso
         if reused:
             aviso = (
                 "Conversa já iniciada por esta preparação; nenhum novo chat foi aberto. " + aviso
@@ -1092,9 +1154,13 @@ def _plain_text(value: str) -> str:
 
 
 def _estado(session: _Session) -> EstadoChatCap1g:
-    if session.state is None:
-        return EstadoChatCap1g.INDETERMINADO
-    estado = _ESTADOS.get(session.state, EstadoChatCap1g.INDETERMINADO)
-    if session.ended and estado is not EstadoChatCap1g.ENCERRADO:
-        return EstadoChatCap1g.ENCERRADO if session.closed_by_visitor else estado
-    return estado
+    estado = (
+        EstadoChatCap1g.INDETERMINADO
+        if session.state is None
+        else _ESTADOS.get(session.state, EstadoChatCap1g.INDETERMINADO)
+    )
+    if not session.ended or estado is EstadoChatCap1g.ENCERRADO:
+        return estado
+    # Acabou sem o chat ter sido fechado: o Mibew vai marcar o visitante como
+    # "saiu", e é isso que a leitura deve dizer — não "em atendimento".
+    return EstadoChatCap1g.ENCERRADO if session.closed_by_visitor else EstadoChatCap1g.ABANDONADO

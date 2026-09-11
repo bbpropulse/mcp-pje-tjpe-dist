@@ -357,9 +357,11 @@ tribunal, então o MCP trata a conversa como ação externa em nome do usuário:
    janela aberta: é o próprio cliente Mibew que faz o polling a cada 2 segundos
    e conserva a conversa viva. A resposta só volta depois que a pergunta inicial
    ecoa na conversa (ou, se o formulário não tiver esse campo, depois de enviá-la
-   como primeira mensagem). O advogado acompanha tudo na janela e pode digitar
-   nela por conta própria. Há uma conversa por vez; a mesma preparação nunca
-   abre um segundo chat.
+   como primeira mensagem); se a página já abrir direto no chat, o formulário é
+   pulado. Uma vez aberta a conversa, uma falha na primeira mensagem vira aviso
+   na resposta, não fechamento da janela. O advogado acompanha tudo na janela e
+   pode digitar nela por conta própria. Há uma conversa por vez; a mesma
+   preparação nunca abre um segundo chat.
 4. `ler_chat_cap1g` e `aguardar_resposta_chat_cap1g` leem os modelos do cliente
    Mibew (`thread`, `user`, `messages`), não o HTML pintado: cada mensagem volta
    com `id`, tipo (`visitante`, `operador`, `info`…), autor e horário. A espera
@@ -369,9 +371,11 @@ tribunal, então o MCP trata a conversa como ação externa em nome do usuário:
    página a cada 2 segundos e grava uma transcrição parcial, para nada se perder
    entre chamadas.
 5. `enviar_mensagem_chat_cap1g` digita no campo do chat, clica em *Enviar* e só
-   retorna quando a mensagem ecoa na conversa. Recusa texto idêntico ao último
-   enviado e avisa quando a mensagem segue outra sua sem resposta do operador —
-   a CAP1G pede que não se repita mensagem em sequência.
+   retorna quando a mensagem ecoa na conversa. Se o eco não vier no prazo, a
+   mensagem é tratada como **enviada** mesmo assim: o erro pede para conferir com
+   `ler_chat_cap1g`, e o texto idêntico passa a ser recusado. Também recusa texto
+   igual ao último enviado e avisa quando a mensagem segue outra sua sem resposta
+   do operador — a CAP1G pede que não se repita mensagem em sequência.
 6. `encerrar_chat_cap1g` aciona o controle *Fechar chat* do Mibew, fecha a
    janela e publica a transcrição em Markdown, com permissão `0600` e sidecar
    `.sha256`, em `Downloads/PJe-TJPE/TJPE/CAP1G/`. Se o operador encerrar antes,

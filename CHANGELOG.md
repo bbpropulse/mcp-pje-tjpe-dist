@@ -4,6 +4,24 @@ Formato inspirado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
 versões seguem [SemVer](https://semver.org/lang/pt-BR/). Cada versão publicada aqui
 corresponde a um snapshot no repositório público de distribuição.
 
+## 0.7.1 — 2026-09-11
+
+### Corrigido
+
+- `enviar_mensagem_chat_cap1g`: uma mensagem clicada mas sem eco no prazo agora conta
+  como enviada — o erro pede para conferir a conversa e o texto idêntico passa a ser
+  recusado, em vez de convidar a repetir o pedido ao tribunal.
+- Erros transitórios do navegador durante uma espera (eco, encerramento) são
+  tolerados até o prazo, em vez de deixar o encerramento pela metade.
+- `iniciar_chat_cap1g`: falha na primeira mensagem depois de a conversa existir vira
+  aviso, não fechamento da janela na frente do operador; a página que abre direto
+  no chat (visitante já conhecido) é reconhecida em vez de esperar um formulário.
+- Janela fechada à mão passa a ler `abandonado`; encerrar sem alcançar o controle
+  do Mibew registra que o chat não confirmou; ao desligar o servidor o visitante
+  se despede da conversa antes de a janela sumir.
+- Texto com `<` e `>` em prosa deixa de ser tratado como marcação; espaço antes do
+  JSON embutido na página não impede a leitura.
+
 ## 0.7.0 — 2026-09-11
 
 ### Adicionado

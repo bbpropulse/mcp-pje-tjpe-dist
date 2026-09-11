@@ -135,7 +135,9 @@ def _preparar_destino(destino: Path) -> None:
         return
     if not (destino / ".git").is_dir():
         raise SystemExit(_falhar(f"{destino} existe, mas não é um repositório git"))
-    if _sh("git", "status", "--porcelain", cwd=destino):
+    # Só o que está rastreado conta: o Finder do macOS semeia cópias "arquivo 2"
+    # em qualquer pasta sincronizada, e o snapshot substitui a árvore inteira.
+    if _sh("git", "status", "--porcelain", "--untracked-files=no", cwd=destino):
         raise SystemExit(_falhar(f"{destino} tem alterações locais; resolva antes de publicar"))
 
 
