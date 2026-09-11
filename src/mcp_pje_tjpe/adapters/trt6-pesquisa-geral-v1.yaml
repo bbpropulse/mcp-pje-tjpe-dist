@@ -1,0 +1,47 @@
+schema_version: 1
+adapter_id: trt6-pesquisa-geral-v1
+tribunal: trt6
+system: pje
+flow: pesquisa_geral
+environments:
+  - trt6_1g
+  - trt6_2g
+approved_for_active: false
+steps:
+  search_submit:
+    strategies:
+      - id: role-button-pesquisar
+        kind: role_exact
+        approved: false
+        role: button
+        names:
+          - Pesquisar
+          - Consultar
+        constraints:
+          native_submit: true
+          visible: true
+          enabled: true
+          unique: true
+          owns_form: true
+          count:
+            - 1
+  npu_field:
+    strategies:
+      - id: label-numero-processo
+        kind: label_exact
+        approved: false
+        labels:
+          - Número do processo
+          - Processo
+        constraints:
+          visible: true
+          enabled: true
+          unique: false
+          input_types:
+            - text
+            - search
+            - tel
+          editable: true
+          count:
+            - 1
+            - 6

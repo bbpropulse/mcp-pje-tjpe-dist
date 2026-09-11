@@ -1,0 +1,48 @@
+schema_version: 1
+adapter_id: tjpe-pesquisa-geral-v1
+tribunal: tjpe
+system: pje
+flow: pesquisa_geral
+environments:
+  - tjpe_1g
+  - tjpe_2g
+approved_for_active: true
+steps:
+  search_submit:
+    strategies:
+      - id: role-button-pesquisar
+        kind: role_exact
+        approved: true
+        role: button
+        names:
+          - Pesquisar
+          - Consultar
+        constraints:
+          native_submit: true
+          visible: true
+          enabled: true
+          unique: true
+          owns_form: true
+          count:
+            - 1
+  npu_field:
+    strategies:
+      - id: label-numero-processo
+        kind: label_exact
+        approved: true
+        labels:
+          - Numeração única
+          - Número do processo
+          - Processo
+        constraints:
+          visible: true
+          enabled: true
+          unique: false
+          input_types:
+            - text
+            - search
+            - tel
+          editable: true
+          count:
+            - 1
+            - 6

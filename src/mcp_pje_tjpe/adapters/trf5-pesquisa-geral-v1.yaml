@@ -1,0 +1,48 @@
+schema_version: 1
+adapter_id: trf5-pesquisa-geral-v1
+tribunal: trf5
+system: pje
+flow: pesquisa_geral
+environments:
+  - trf5_sjpe_1g
+  - trf5_2g
+  - trf5_turmas_recursais
+approved_for_active: false
+steps:
+  search_submit:
+    strategies:
+      - id: role-button-pesquisar
+        kind: role_exact
+        approved: false
+        role: button
+        names:
+          - Pesquisar
+        constraints:
+          native_submit: true
+          visible: true
+          enabled: true
+          unique: true
+          owns_form: true
+          count:
+            - 1
+  npu_field:
+    strategies:
+      - id: label-numero-processo
+        kind: label_exact
+        approved: false
+        labels:
+          - Numeração única
+          - Número do processo
+          - Processo
+        constraints:
+          visible: true
+          enabled: true
+          unique: false
+          input_types:
+            - text
+            - search
+            - tel
+          editable: true
+          count:
+            - 1
+            - 6

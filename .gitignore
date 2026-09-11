@@ -1,0 +1,21 @@
+.DS_Store
+.env
+.venv
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+playwright/.auth/
+downloads/
+
+# Cópias duplicadas criadas pelo Finder do macOS ("arquivo 2.py"): são versões
+# antigas, nunca fonte, e não devem entrar em commit nem em lint.
+* [0-9].py
+* [0-9].md
+*.venv [0-9]/
